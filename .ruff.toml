@@ -1,0 +1,31 @@
+target-version = "py312"
+
+[lint]
+select = [
+  "E",   # pycodestyle
+  "W",   # pycodestyle
+  "F",   # Pyflakes
+  "PL",  # pylint
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "A",   # flake8-builtins
+  "S",   # flake8-bandit
+  "ICN", # flake8-import-conventions
+  "PIE", # flake8-pie
+  "Q",   # flake8-quotes
+  "RET", # flake8-return
+  "SIM", # flake8-simplify
+  "TID", # flake8-tidy-imports
+  "RUF", # Ruff-specific rules
+  "YTT", # flake8-2020
+  "UP",  # pyupgrade
+  "C4",  # flake8-comprehensions
+  "PTH", # flake8-use-pathlib
+  "G",   # flake8-logging-format
+  "INP", # flake8-no-pep420
+  "T20", # flake8-print
+]
+ignore = [
+  "PLR2004", # magic-value-comparison
+  "T201",    # checks for print statements
+]

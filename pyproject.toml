@@ -1,0 +1,35 @@
+[tool.poetry]
+name = "mubot"
+version = "0.0.1"
+description = "A Muchat and SimpleX Chat compatible AI bot that connects to your Ollama instance and chats with you."
+authors = [
+  "Cainã Costa <me@cfcosta.com>",
+  "Lucas Barros <lucasnbarros@gmail.com>",
+]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.13"
+
+[tool.poetry.group.dev.dependencies]
+autoflake = "^2.3.1"
+mypy = "^1.9.0"
+vulture = "^2.14"
+pylint = "^3.3.2"
+ruff = "^0.8.2"
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.poetry.scripts]
+mubot = "mubot:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
