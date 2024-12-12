@@ -10,6 +10,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.13"
+litellm = "^1.54.1"
 
 [tool.poetry.group.dev.dependencies]
 autoflake = "^2.3.1"
