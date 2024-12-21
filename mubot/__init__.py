@@ -3,19 +3,18 @@
 import os
 import pkgutil
 import sys
+import asyncio
 from importlib import import_module
 from pathlib import Path
 
 
 def find_executables() -> list[str]:
     commands = []
-
     for path in os.environ["PATH"].split(os.pathsep):
         if Path(path).exists():
             for cmd in os.listdir(path):
                 if cmd.startswith("mubot-"):
                     commands.append(cmd[6:])  # Remove 'mubot-' prefix
-
     return sorted(set(commands))
 
 
@@ -38,7 +37,7 @@ def find_modules() -> list[tuple[str, str]]:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        # list available commands and modules
+        # List available commands and modules
         print("Available commands:")
         for cmd in find_executables():
             print(f"  {cmd}")
@@ -55,12 +54,16 @@ def main() -> None:
         if module_name != "mubot.__main__":  # Ignore __main__
             module = import_module(module_name)
             if hasattr(module, "main"):
-                module.main()
+                # Check if main is a coroutine function
+                if asyncio.iscoroutinefunction(module.main):
+                    asyncio.run(module.main())
+                else:
+                    module.main()
                 sys.exit(0)
     except ImportError:
         pass
 
-    # Fall back to executable if no module found
+    # Fall back to executable if no module is found
     executable = f"mubot-{subcommand}"
     for path in os.environ["PATH"].split(os.pathsep):
         exe_path = Path(path) / executable
