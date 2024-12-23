@@ -1,26 +1,19 @@
 """
 MuBot Ollama main module
 """
-
 import json
 import asyncio
-import logging
-
+import uuid
+from typing import Union
 from websockets.legacy.client import connect, WebSocketClientProtocol
 from litellm import completion
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 WEBSOCKET_URI = "ws://localhost:3030"
 OLLAMA_API_BASE = "http://localhost:11434"
 OLLAMA_MODEL = "ollama/llama3.2:1b"
 
-
 async def get_llm_response(message: str) -> str:
-    """
-    Obtain an LLM response from Ollama using LiteLLM's synchronous `completion`.
-    """
+    """Get an LLM response from Ollama."""
     try:
         response = completion(
             model=OLLAMA_MODEL,
@@ -29,63 +22,67 @@ async def get_llm_response(message: str) -> str:
             stream=False,
         )
         return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"LiteLLM API error: {e}")
-        raise
+    except Exception:
+        return "Sorry, I encountered an error. Please try again."
 
-
-async def process_incoming_message(
-    websocket: WebSocketClientProtocol, raw_message: str
-) -> None:
-    """
-    Processes a single incoming raw message from the WebSocket,
-    sends an LLM-generated response if applicable.
-    """
+async def process_incoming_message(websocket: WebSocketClientProtocol, raw_message: Union[str, bytes]) -> None:
+    """Process incoming WebSocket message and send response if applicable."""
     try:
-        data = json.loads(raw_message)
-        chat_item = data["resp"]["chatItems"][0]["chatItem"]
+        # Convert bytes to str if necessary
+        message_str = raw_message.decode() if isinstance(raw_message, bytes) else raw_message
+        data = json.loads(message_str)
 
-        # Ignore outgoing messages
-        if chat_item["chatDir"]["type"] != "directRcv":
+        if not (data.get("resp", {}).get("type") == "newChatItems" and
+                "chatItems" in data.get("resp", {})):
             return
 
-        user_text = chat_item["content"]["msgContent"]["text"]
-        logger.info(f"Received user message: {user_text}")
+        chat_items = data["resp"]["chatItems"]
+        if not chat_items:
+            return
 
-        logger.info("Fetching LLM response from Ollama...")
-        llm_response = await get_llm_response(user_text)
-        logger.info(f"LLM response: {llm_response}")
+        chat_info = chat_items[0].get("chatInfo", {})
+        chat_item = chat_items[0].get("chatItem", {})
+        contact = chat_info.get("contact", {})
+
+        if chat_item.get("chatDir", {}).get("type") != "directRcv":
+            return
+
+        msg_content = chat_item.get("content", {}).get("msgContent", {})
+        if msg_content.get("type") != "text":
+            return
+
+        text = msg_content.get("text")
+        if not text:
+            return
+
+        sender = contact.get("localDisplayName")
+        if not sender:
+            return
+
+        llm_response = await get_llm_response(text)
+        formatted_sender = f"'{sender}'" if ' ' in sender else sender
+        formatted_response = f"@{formatted_sender} {llm_response}"
 
         response_data = {
-            "corrId": "123",
-            "cmd": f"@lucasnbarros_1 {llm_response}",
+            "corrId": str(uuid.uuid4()),
+            "cmd": formatted_response
         }
         await websocket.send(json.dumps(response_data))
-        logger.info("Response sent.")
-    except Exception as e:
-        logger.error(f"Error processing message: {e}")
 
+    except Exception:
+        pass
 
 async def main() -> None:
-    """
-    Connect to the WebSocket server, continuously receive messages,
-    and process them using `process_incoming_message`.
-    """
+    """Run the main WebSocket client loop."""
     try:
         async with connect(WEBSOCKET_URI) as websocket:
-            logger.info("Connected to WebSocket server.")
-
             while True:
                 raw_msg = await websocket.recv()
                 await process_incoming_message(websocket, raw_msg)
-
     except KeyboardInterrupt:
-        logger.info("Shutting down due to keyboard interrupt.")
-    except asyncio.CancelledError:
-        logger.info("Task cancelled.")
-    except Exception as e:
-        logger.error(f"WebSocket connection error: {e}")
-
+        pass
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     asyncio.run(main())
