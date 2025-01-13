@@ -4,23 +4,69 @@ from typing import AsyncGenerator
 from websockets.legacy.client import connect, WebSocketClientProtocol
 from litellm import completion
 
+from .tools import (
+    FUNCTION_SCHEMAS,
+    should_use_tools,
+    extract_location,
+    execute_function_call
+)
+
 WEBSOCKET_URI = "ws://localhost:8765"
 OLLAMA_API_BASE = "http://localhost:11434"
 OLLAMA_MODEL = "ollama/llama3.2:1b"
 
 async def get_streaming_llm_response(message: str) -> AsyncGenerator[str, None]:
-    try:
-        response = completion(
-            model=OLLAMA_MODEL,
-            messages=[{"role": "user", "content": message}],
-            api_base=OLLAMA_API_BASE,
-            stream=True,
-        )
-        for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-    except Exception:
-        yield "Sorry, I encountered an error. Please try again."
+    use_tools = should_use_tools(message)
+
+    if use_tools:
+        location = extract_location(message)
+        messages = [
+            {
+                "role": "system",
+                "content": f"You are a weather assistant. When responding about temperature, "
+                           f"always use the get_temperature function to fetch accurate data. "
+                           f"The user is asking about the temperature in {location}. "
+                           "Be concise and direct in your response."
+            } if location else {},
+            {"role": "user", "content": message}
+        ]
+    else:
+        messages = [{"role": "user", "content": message}]
+
+    messages = [msg for msg in messages if msg]
+
+    buffer = ""
+    response = completion(
+        model=OLLAMA_MODEL,
+        messages=messages,
+        api_base=OLLAMA_API_BASE,
+        stream=True,
+        tools=FUNCTION_SCHEMAS if use_tools else None,
+        tool_choice="auto" if use_tools else None
+    )
+
+    for chunk in response:
+        if use_tools and chunk.choices and hasattr(chunk.choices[0].delta, 'tool_calls'):
+            for tool_call in chunk.choices[0].delta.tool_calls or []:
+                if hasattr(tool_call, 'function'):
+                    try:
+                        result = await execute_function_call({
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments
+                        })
+                        yield f"{result}"
+                    except Exception as e:
+                        yield f"\nError executing function: {str(e)}\n"
+
+        if chunk.choices and chunk.choices[0].delta.content:
+            buffer += chunk.choices[0].delta.content
+
+            if any(buffer.endswith(end) for end in ('.', '!', '?', '\n')):
+                yield buffer
+                buffer = ""
+
+    if buffer:
+        yield buffer
 
 async def send_message(websocket: WebSocketClientProtocol, corr_id: str, sender: str, message: str) -> None:
     msg_content = [{"msgContent": {"type": "text", "text": message}}]
@@ -33,61 +79,44 @@ async def send_edit(websocket: WebSocketClientProtocol, corr_id: str, sender: st
     await websocket.send(json.dumps({"corrId": corr_id, "cmd": cmd}))
 
 async def process_incoming_message(websocket: WebSocketClientProtocol, raw_message: str) -> None:
-    try:
-        data = json.loads(raw_message)
-        resp = data.get("resp", {})
-        if resp.get("type") != "newChatItems" or not resp.get("chatItems"):
-            return
+    data = json.loads(raw_message)
+    resp = data.get("resp", {})
+    if resp.get("type") != "newChatItems" or not resp.get("chatItems"):
+        return
 
-        chat_item = resp["chatItems"][0]
-        if chat_item.get("chatItem", {}).get("chatDir", {}).get("type") != "directRcv":
-            return
+    chat_item = resp["chatItems"][0]
+    if chat_item.get("chatItem", {}).get("chatDir", {}).get("type") != "directRcv":
+        return
 
-        meta = chat_item.get("chatItem", {}).get("meta", {})
-        content = chat_item.get("chatItem", {}).get("content", {}).get("msgContent", {})
-        contact = chat_item.get("chatInfo", {}).get("contact", {})
+    meta = chat_item.get("chatItem", {}).get("meta", {})
+    content = chat_item.get("chatItem", {}).get("content", {}).get("msgContent", {})
+    contact = chat_item.get("chatInfo", {}).get("contact", {})
 
-        item_id = meta.get("itemId")
-        text = content.get("text")
-        sender = contact.get("contactId")
+    item_id = meta.get("itemId")
+    text = content.get("text")
+    sender = contact.get("contactId")
 
-        if not all([item_id, text, sender]):
-            return
+    if not all([item_id, text, sender]):
+        return
 
-        corr_id = str(item_id + 1)
-        buffer = []
-        accumulated_text = []
-        first_message = True
+    corr_id = str(item_id + 1)
+    accumulated_text = []
+    first_message = True
 
-        async for chunk in get_streaming_llm_response(text):
-            if not chunk:
-                continue
+    async for chunk in get_streaming_llm_response(text):
+        if not chunk:
+            continue
 
-            buffer.append(chunk)
-            if any(chunk.endswith(end) for end in ('.', '!', '?')):
-                current_text = ''.join(buffer).strip()
-                accumulated_text.append(current_text)
-                buffer = []
+        accumulated_text.append(chunk)
+        current_text = ' '.join(accumulated_text)
 
-                if first_message:
-                    await send_message(websocket, corr_id, sender, current_text)
-                    first_message = False
-                else:
-                    await send_edit(websocket, corr_id, sender, ' '.join(accumulated_text))
+        if first_message:
+            await send_message(websocket, corr_id, sender, current_text)
+            first_message = False
+        else:
+            await send_edit(websocket, corr_id, sender, current_text)
 
-                await asyncio.sleep(0.05)
-
-        if buffer:
-            final_text = ''.join(buffer).strip()
-            accumulated_text.append(final_text)
-
-            if first_message:
-                await send_message(websocket, corr_id, sender, final_text)
-            else:
-                await send_edit(websocket, corr_id, sender, ' '.join(accumulated_text))
-
-    except Exception as e:
-        print(f"Error processing message: {e}")
+        await asyncio.sleep(0.01)
 
 async def main() -> None:
     while True:
@@ -97,11 +126,10 @@ async def main() -> None:
                     raw_msg = await websocket.recv()
                     await process_incoming_message(websocket, raw_msg)
         except Exception as e:
-            print(f"Error: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Shutting down...")
+        pass
